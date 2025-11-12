@@ -263,10 +263,12 @@ type Config struct {
 	// BackendBatchLimit is the maximum operations before commit the backend transaction.
 	BackendBatchLimit int `json:"backend-batch-limit"`
 	// BackendFreelistType specifies the type of freelist that boltdb backend uses (array and map are supported types).
-	BackendFreelistType string `json:"backend-bbolt-freelist-type"`
-	QuotaBackendBytes   int64  `json:"quota-backend-bytes"`
-	MaxTxnOps           uint   `json:"max-txn-ops"`
-	MaxRequestBytes     uint   `json:"max-request-bytes"`
+	BackendFreelistType      string `json:"backend-bbolt-freelist-type"`
+	QuotaBackendBytes        int64  `json:"quota-backend-bytes"`
+	BackendUsePostgres       bool   `json:"backend-use-postgres"`
+	BackendUsePostgresKvType string `json:"backend-use-postgres-kv"`
+	MaxTxnOps                uint   `json:"max-txn-ops"`
+	MaxRequestBytes          uint   `json:"max-request-bytes"`
 
 	// MaxConcurrentStreams specifies the maximum number of concurrent
 	// streams that each client can open at a time.
@@ -776,6 +778,8 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	fs.UintVar(&cfg.TickMs, "heartbeat-interval", cfg.TickMs, "Time (in milliseconds) of a heartbeat interval.")
 	fs.UintVar(&cfg.ElectionMs, "election-timeout", cfg.ElectionMs, "Time (in milliseconds) for an election to timeout.")
 	fs.BoolVar(&cfg.InitialElectionTickAdvance, "initial-election-tick-advance", cfg.InitialElectionTickAdvance, "Whether to fast-forward initial election ticks on boot for faster election.")
+	fs.BoolVar(&cfg.BackendUsePostgres, "backend-use-postgres", cfg.BackendUsePostgres, "Enables Postgresql Backend")
+	fs.StringVar(&cfg.BackendUsePostgresKvType, "backend-use-postgres-kv-type", cfg.BackendUsePostgresKvType, "Enables Postgresql KV Backend")
 	fs.Int64Var(&cfg.QuotaBackendBytes, "quota-backend-bytes", cfg.QuotaBackendBytes, "Sets the maximum size (in bytes) that the etcd backend database may consume. Exceeding this triggers an alarm and puts etcd in read-only mode. Set to 0 to use the default 2GiB limit.")
 	fs.StringVar(&cfg.BackendFreelistType, "backend-bbolt-freelist-type", cfg.BackendFreelistType, "BackendFreelistType specifies the type of freelist that boltdb backend uses(array and map are supported types)")
 	fs.DurationVar(&cfg.BackendBatchInterval, "backend-batch-interval", cfg.BackendBatchInterval, "BackendBatchInterval is the maximum time before commit the backend transaction.")

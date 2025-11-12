@@ -15,16 +15,19 @@
 package backend
 
 import (
+	"context"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
 	bolt "go.etcd.io/bbolt"
@@ -44,6 +47,8 @@ var (
 
 	// minSnapshotWarningTimeout is the minimum threshold to trigger a long running snapshot warning.
 	minSnapshotWarningTimeout = 30 * time.Second
+
+	TEST_POSTGRES = true
 )
 
 type Backend interface {
@@ -128,6 +133,8 @@ type backend struct {
 	txPostLockInsideApplyHook func()
 
 	lg *zap.Logger
+
+	pgBackend *pgBackend
 }
 
 type BackendConfig struct {
@@ -174,13 +181,22 @@ func WithMmapSize(size uint64) BackendConfigOption {
 }
 
 func NewDefaultBackend(lg *zap.Logger, path string, opts ...BackendConfigOption) Backend {
-	bcfg := DefaultBackendConfig(lg)
-	bcfg.Path = path
-	for _, opt := range opts {
-		opt(&bcfg)
+	if TEST_POSTGRES {
+		bcfg := DefaultPgBackendConfig(lg)
+		connectionStrings := strings.Split(path, "----")
+		bcfg.PgReadConnectionString = connectionStrings[0]
+		bcfg.PgWriteConnectionString = connectionStrings[1]
+		return newPgBackend(bcfg)
+	} else {
+		bcfg := DefaultBackendConfig(lg)
+		bcfg.Path = path
+		for _, opt := range opts {
+			opt(&bcfg)
+		}
+
+		return newBackend(bcfg)
 	}
 
-	return newBackend(bcfg)
 }
 
 func newBackend(bcfg BackendConfig) *backend {
@@ -289,17 +305,26 @@ func (b *backend) ConcurrentReadTx() ReadTx {
 	curCache := b.txReadBufferCache.buf
 	curCacheVer := b.txReadBufferCache.bufVersion
 	curBufVer := b.readTx.buf.bufVersion
+	var curKvCache *PgKvBuffer[*PgKvLogEntry]
+	if b.pgBackend != nil {
+		curKvCache = b.pgBackend.kvReadBufferCache
+	}
 
 	isEmptyCache := curCache == nil
 	isStaleCache := curCacheVer != curBufVer
 
 	var buf *txReadBuffer
+	var kvBuf *PgKvBuffer[*PgKvLogEntry]
 	switch {
 	case isEmptyCache:
 		// perform safe copy of buffer while holding "b.txReadBufferCache.mu.Lock"
 		// this is only supposed to run once so there won't be much overhead
 		curBuf := b.readTx.buf.unsafeCopy()
 		buf = &curBuf
+		if b.pgBackend != nil {
+			curKvBuf := b.readTx.pgTx.kvBuffer.Copy()
+			kvBuf = &curKvBuf
+		}
 	case isStaleCache:
 		// to maximize the concurrency, try unsafe copy of buffer
 		// release the lock while copying buffer -- cache may become stale again and
@@ -307,11 +332,18 @@ func (b *backend) ConcurrentReadTx() ReadTx {
 		// therefore, we need to check the readTx buffer version again
 		b.txReadBufferCache.mu.Unlock()
 		curBuf := b.readTx.buf.unsafeCopy()
-		b.txReadBufferCache.mu.Lock()
 		buf = &curBuf
+		if b.pgBackend != nil {
+			curKvBuf := b.readTx.pgTx.kvBuffer.Copy()
+			kvBuf = &curKvBuf
+		}
+		b.txReadBufferCache.mu.Lock()
 	default:
 		// neither empty nor stale cache, just use the current buffer
 		buf = curCache
+		if b.pgBackend != nil {
+			kvBuf = curKvCache
+		}
 	}
 	// txReadBufferCache.bufVersion can be modified when we doing an unsafeCopy()
 	// as a result, curCacheVer could be no longer the same as
@@ -325,9 +357,24 @@ func (b *backend) ConcurrentReadTx() ReadTx {
 		// continue if the cache is never set or no one has modified the cache
 		b.txReadBufferCache.buf = buf
 		b.txReadBufferCache.bufVersion = curBufVer
+		if b.pgBackend != nil {
+			b.pgBackend.kvReadBufferCache = kvBuf
+		}
 	}
 
 	b.txReadBufferCache.mu.Unlock()
+
+	var pgTx *pgReadTx
+	if b.pgBackend != nil {
+		pgTx = &pgReadTx{
+			pgSharedTx: pgSharedTx{
+				lg:     b.lg,
+				kvType: b.pgBackend.kvType,
+			},
+			readPool: b.pgBackend.readPool,
+			kvBuffer: *kvBuf,
+		}
+	}
 
 	// concurrentReadTx is not supposed to write to its txReadBuffer
 	return &concurrentReadTx{
@@ -337,8 +384,10 @@ func (b *backend) ConcurrentReadTx() ReadTx {
 			tx:      b.readTx.tx,
 			buckets: b.readTx.buckets,
 			txWg:    b.readTx.txWg,
+			pgTx:    pgTx,
 		},
 	}
+
 }
 
 // ForceCommit forces the current batching tx to commit.
@@ -451,7 +500,14 @@ func (b *backend) Close() error {
 	<-b.donec
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.db.Close()
+	if b.pgBackend == nil {
+		return b.db.Close()
+	} else {
+		b.pgBackend.readPool.Close()
+		b.pgBackend.writePool.Close()
+		return nil
+	}
+
 }
 
 // Commits returns total number of commits since start
@@ -460,7 +516,43 @@ func (b *backend) Commits() int64 {
 }
 
 func (b *backend) Defrag() error {
-	return b.defrag()
+	if b.pgBackend == nil {
+		return b.defrag()
+	} else {
+		return b.pgDefrag()
+	}
+}
+
+func (b *backend) pgDefrag() error {
+	verify.Assert(b.lg != nil, "the logger should not be nil")
+	now := time.Now()
+	isDefragActive.Set(1)
+	defer isDefragActive.Set(0)
+
+	batch := &pgx.Batch{}
+	if b.pgBackend.useOriole {
+		// OrioleDB doesn't handle FULL yet
+		batch.Queue("VACUUM (ANALYZE)")
+	} else {
+		// FULL will lock the table so we don't have to
+		batch.Queue("VACUUM (FULL, ANALYZE)")
+	}
+	results := b.pgBackend.writePool.SendBatch(context.Background(), batch)
+	err := results.Close()
+
+	if err != nil {
+		b.lg.Fatal("failed to VACUUM database", zap.Error(err))
+	}
+
+	took := time.Since(now)
+	defragSec.Observe(took.Seconds())
+
+	b.lg.Info(
+		"finished defragmenting directory",
+		zap.Duration("took", took),
+	)
+
+	return nil
 }
 
 func (b *backend) defrag() error {
@@ -690,6 +782,44 @@ func (b *backend) unsafeBegin(write bool) *bolt.Tx {
 	return tx
 }
 
+func (b *backend) pgBeginWrite() pgx.Tx {
+	b.mu.RLock()
+	tx := b.unsafePgBeginWrite()
+	b.mu.RUnlock()
+	var size int64
+	var row pgx.Row
+	switch b.pgBackend.kvType {
+	case KvBucket:
+		row = tx.QueryRow(context.Background(), BUCKETS_DB_SIZE.Fn())
+	case KvBucketKeys:
+		row = tx.QueryRow(context.Background(), BUCKET_KEYS_DB_SIZE.Fn())
+	case KvLbrNowNorm:
+		row = tx.QueryRow(context.Background(), KV_LBR_NOW_NORM_DB_SIZE.Fn())
+	case KvLbrNowNifs:
+		row = tx.QueryRow(context.Background(), KV_LBR_NOW_NIFS_DB_SIZE.Fn())
+	case KvLbrKidNowNorm:
+		row = tx.QueryRow(context.Background(), KV_LBR_KID_NOW_NORM_DB_SIZE.Fn())
+	case KvLbrKidNowNifs:
+		row = tx.QueryRow(context.Background(), KV_LBR_KID_NOW_NIFS_DB_SIZE.Fn())
+	default:
+		b.lg.Panic("unknown PgKvType", zap.String("kv", b.pgBackend.kvType.String()))
+	}
+	err := row.Scan(&size)
+	if err != nil {
+		b.lg.Fatal("Unable to determine table size", zap.Error(err))
+	}
+	atomic.StoreInt64(&b.size, size)
+	return tx
+}
+
+func (b *backend) unsafePgBeginWrite() pgx.Tx {
+	tx, err := b.pgBackend.writePool.Begin(context.Background())
+	if err != nil {
+		b.lg.Fatal("failed to begin tx", zap.Error(err))
+	}
+	return tx
+}
+
 func (b *backend) OpenReadTxN() int64 {
 	return atomic.LoadInt64(&b.openReadTxN)
 }
@@ -701,9 +831,10 @@ type snapshot struct {
 }
 
 func (s *snapshot) Close() error {
+	err := s.Tx.Rollback()
 	close(s.stopc)
 	<-s.donec
-	return s.Tx.Rollback()
+	return err
 }
 
 func newBoltLoggerZap(bcfg BackendConfig) bolt.Logger {

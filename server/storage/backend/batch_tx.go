@@ -16,16 +16,20 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype/zeronull"
 	"go.uber.org/zap"
 
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 
 type BucketID int
@@ -43,6 +47,8 @@ type Bucket interface {
 	// overwrites on a bucket should only fetch with limit=1, but safeRangeBucket
 	// is known to never overwrite any key so range is safe.
 	IsSafeRangeBucket() bool
+
+	IsKeys() bool
 }
 
 type BatchTx interface {
@@ -58,8 +64,8 @@ type BatchTx interface {
 }
 
 type UnsafeReadWriter interface {
-	UnsafeReader
-	UnsafeWriter
+	UnsafeKvReader
+	UnsafeKvWriter
 }
 
 type UnsafeWriter interface {
@@ -70,12 +76,46 @@ type UnsafeWriter interface {
 	UnsafeDelete(bucket Bucket, key []byte)
 }
 
+type UnsafeKvWriter interface {
+	UnsafeWriter
+	UnsafeKvPutKey(revMain, revSub, revCreate, lease, version int64, key, value []byte)
+	UnsafeKvDeleteKey(revMain, revSub int64, key []byte)
+	LockKvCompact()
+	UnlockKvCompact()
+	UnsafeKvLogCompact(compactMainRev int64, visitor func(entry mvccpb.KeyValue) error) (int64, error)
+}
+
+type UnsafeKvReadWriter interface {
+	UnsafeKvReader
+	UnsafeKvWriter
+}
+
 type batchTx struct {
 	sync.Mutex
 	tx      *bolt.Tx
 	backend *backend
-
+	pgTx    *pgBatchTx
 	pending int
+}
+
+func (t *batchTx) IsPgAware() bool {
+	return t.pgTx != nil
+}
+
+func (t *batchTx) assertPgAware() {
+	if !t.IsPgAware() {
+		t.backend.lg.Panic("Attempting to use pg aware functions!")
+	}
+}
+
+func (t *batchTx) IsKvAware() bool {
+	return t.pgTx != nil && t.pgTx.IsKvAware()
+}
+
+func (t *batchTx) assertKvAware() {
+	if !t.IsKvAware() {
+		t.backend.lg.Panic("Attempting to use kv aware functions!")
+	}
 }
 
 // Lock is supposed to be called only by the unit test.
@@ -113,26 +153,47 @@ func (t *batchTx) Unlock() {
 	t.Mutex.Unlock()
 }
 
+func (t *batchTx) LockKvCompact() {
+	if t.IsKvAware() {
+		t.pgTx.compactLock.Lock()
+	}
+}
+
+func (t *batchTx) UnlockKvCompact() {
+	if t.IsKvAware() {
+		t.pgTx.compactLock.Unlock()
+	}
+}
+
 func (t *batchTx) UnsafeCreateBucket(bucket Bucket) {
-	if _, err := t.tx.CreateBucketIfNotExists(bucket.Name()); err != nil {
-		t.backend.lg.Fatal(
-			"failed to create a bucket",
-			zap.Stringer("bucket-name", bucket),
-			zap.Error(err),
-		)
+	if t.pgTx == nil {
+		if _, err := t.tx.CreateBucketIfNotExists(bucket.Name()); err != nil {
+			t.backend.lg.Fatal(
+				"failed to create a bucket",
+				zap.Stringer("bucket-name", bucket),
+				zap.Error(err),
+			)
+		}
+	} else {
+		t.pgTx.unsafeCreateBucket(bucket)
 	}
 	t.pending++
 }
 
 func (t *batchTx) UnsafeDeleteBucket(bucket Bucket) {
-	err := t.tx.DeleteBucket(bucket.Name())
-	if err != nil && !errors.Is(err, bolterrors.ErrBucketNotFound) {
-		t.backend.lg.Fatal(
-			"failed to delete a bucket",
-			zap.Stringer("bucket-name", bucket),
-			zap.Error(err),
-		)
+	if t.pgTx == nil {
+		err := t.tx.DeleteBucket(bucket.Name())
+		if err != nil && !errors.Is(err, bolterrors.ErrBucketNotFound) {
+			t.backend.lg.Fatal(
+				"failed to delete a bucket",
+				zap.Stringer("bucket-name", bucket),
+				zap.Error(err),
+			)
+		}
+	} else {
+		t.pgTx.unsafeDeleteBucket(bucket)
 	}
+
 	t.pending++
 }
 
@@ -147,40 +208,49 @@ func (t *batchTx) UnsafeSeqPut(bucket Bucket, key []byte, value []byte) {
 }
 
 func (t *batchTx) unsafePut(bucketType Bucket, key []byte, value []byte, seq bool) {
-	bucket := t.tx.Bucket(bucketType.Name())
-	if bucket == nil {
-		t.backend.lg.Fatal(
-			"failed to find a bucket",
-			zap.Stringer("bucket-name", bucketType),
-			zap.Stack("stack"),
-		)
-	}
-	if seq {
-		// it is useful to increase fill percent when the workloads are mostly append-only.
-		// this can delay the page split and reduce space usage.
-		bucket.FillPercent = 0.9
-	}
-	if err := bucket.Put(key, value); err != nil {
-		t.backend.lg.Fatal(
-			"failed to write to a bucket",
-			zap.Stringer("bucket-name", bucketType),
-			zap.Error(err),
-		)
+	if t.pgTx == nil {
+		bucket := t.tx.Bucket(bucketType.Name())
+		if bucket == nil {
+			t.backend.lg.Fatal(
+				"failed to find a bucket",
+				zap.Stringer("bucket-name", bucketType),
+				zap.Stack("stack"),
+			)
+		}
+		if seq {
+			// it is useful to increase fill percent when the workloads are mostly append-only.
+			// this can delay the page split and reduce space usage.
+			bucket.FillPercent = 0.9
+		}
+		if err := bucket.Put(key, value); err != nil {
+			t.backend.lg.Fatal(
+				"failed to write to a bucket",
+				zap.Stringer("bucket-name", bucketType),
+				zap.Error(err),
+			)
+		}
+	} else {
+		t.pgTx.unsafePutShared(bucketType, key, value)
 	}
 	t.pending++
 }
 
 // UnsafeRange must be called holding the lock on the tx.
 func (t *batchTx) UnsafeRange(bucketType Bucket, key, endKey []byte, limit int64) ([][]byte, [][]byte) {
-	bucket := t.tx.Bucket(bucketType.Name())
-	if bucket == nil {
-		t.backend.lg.Fatal(
-			"failed to find a bucket",
-			zap.Stringer("bucket-name", bucketType),
-			zap.Stack("stack"),
-		)
+	if t.pgTx == nil {
+		bucket := t.tx.Bucket(bucketType.Name())
+		if bucket == nil {
+			t.backend.lg.Fatal(
+				"failed to find a bucket",
+				zap.Stringer("bucket-name", bucketType),
+				zap.Stack("stack"),
+			)
+		}
+		return unsafeRange(bucket.Cursor(), key, endKey, limit)
+	} else {
+		return t.pgTx.unsafeRange(bucketType, key, endKey, limit)
 	}
-	return unsafeRange(bucket.Cursor(), key, endKey, limit)
+
 }
 
 func unsafeRange(c *bolt.Cursor, key, endKey []byte, limit int64) (keys [][]byte, vs [][]byte) {
@@ -207,28 +277,37 @@ func unsafeRange(c *bolt.Cursor, key, endKey []byte, limit int64) (keys [][]byte
 
 // UnsafeDelete must be called holding the lock on the tx.
 func (t *batchTx) UnsafeDelete(bucketType Bucket, key []byte) {
-	bucket := t.tx.Bucket(bucketType.Name())
-	if bucket == nil {
-		t.backend.lg.Fatal(
-			"failed to find a bucket",
-			zap.Stringer("bucket-name", bucketType),
-			zap.Stack("stack"),
-		)
-	}
-	err := bucket.Delete(key)
-	if err != nil {
-		t.backend.lg.Fatal(
-			"failed to delete a key",
-			zap.Stringer("bucket-name", bucketType),
-			zap.Error(err),
-		)
+	if t.pgTx == nil {
+		bucket := t.tx.Bucket(bucketType.Name())
+		if bucket == nil {
+			t.backend.lg.Fatal(
+				"failed to find a bucket",
+				zap.Stringer("bucket-name", bucketType),
+				zap.Stack("stack"),
+			)
+		}
+		err := bucket.Delete(key)
+		if err != nil {
+			t.backend.lg.Fatal(
+				"failed to delete a key",
+				zap.Stringer("bucket-name", bucketType),
+				zap.Error(err),
+			)
+		}
+	} else {
+		t.pgTx.unsafeDelete(bucketType, key)
 	}
 	t.pending++
 }
 
 // UnsafeForEach must be called holding the lock on the tx.
 func (t *batchTx) UnsafeForEach(bucket Bucket, visitor func(k, v []byte) error) error {
-	return unsafeForEach(t.tx, bucket, visitor)
+	if t.pgTx == nil {
+		return unsafeForEach(t.tx, bucket, visitor)
+	} else {
+		return t.pgTx.unsafeForEach(bucket, visitor)
+	}
+
 }
 
 func unsafeForEach(tx *bolt.Tx, bucket Bucket, visitor func(k, v []byte) error) error {
@@ -236,6 +315,60 @@ func unsafeForEach(tx *bolt.Tx, bucket Bucket, visitor func(k, v []byte) error) 
 		return b.ForEach(visitor)
 	}
 	return nil
+}
+
+func (t *batchTx) UnsafeExactKeys(bucket Bucket, keys [][]byte) (vals map[string][]byte) {
+	t.assertPgAware()
+	vals = make(map[string][]byte, len(keys))
+	return t.pgTx.unsafeExactKeys(bucket, keys, vals)
+}
+
+func (t *batchTx) UnsafeKvRangeEntries(key, endKey []byte, limit int64, ro KvRangeOptions) []mvccpb.KeyValue {
+	return t.pgTx.unsafeKvRangeEntries(key, endKey, limit, ro)
+}
+
+func (t *batchTx) UnsafeKvLogRangeEntries(key, endKey []byte, latestRev int64, limit int64, ro KvRangeOptions) []mvccpb.KeyValue {
+	return t.pgTx.unsafeKvLogRangeEntries(key, endKey, latestRev, limit, ro)
+}
+
+func (t *batchTx) UnsafeKvRangeKeys(key, endKey []byte, limit int64, ro KvRangeOptions) [][]byte {
+	return t.pgTx.unsafeKvRangeKeys(key, endKey, limit, ro)
+}
+
+func (t *batchTx) UnsafeKvLogRangeKeys(key, endKey []byte, latestRev int64, limit int64, ro KvRangeOptions) [][]byte {
+	return t.pgTx.unsafeKvLogRangeKeys(key, endKey, latestRev, limit, ro)
+}
+
+func (t *batchTx) UnsafeKvLogForEachByRev(latestRev int64, visitor func(entry mvccpb.KeyValue) error) error {
+	t.assertKvAware()
+	return t.pgTx.unsafeKvLogForEachByRev(latestRev, visitor)
+}
+
+func (t *batchTx) UnsafeKvPutKey(revMain, revSub, revCreate, lease, version int64, key, value []byte) {
+	entry := &PgKvLogEntry{
+		RevMain:   revMain,
+		RevSub:    revSub,
+		RevCreate: revCreate,
+		Lease:     zeronull.Int8(lease),
+		Version:   version,
+		Key:       key,
+		Value:     value,
+	}
+	t.unsafeKvPutKeyShared(entry)
+}
+
+func (t *batchTx) unsafeKvPutKeyShared(entry *PgKvLogEntry) {
+	t.pgTx.unsafeKvPutKey(entry)
+	t.pending += 1
+}
+
+func (t *batchTx) UnsafeKvDeleteKey(revMain, revSub int64, key []byte) {
+	t.pgTx.unsafeKvDeleteKey(revMain, revSub, key)
+	t.pending += 1
+}
+
+func (t *batchTx) UnsafeKvLogCompact(compactMainRev int64, visitor func(entry mvccpb.KeyValue) error) (int64, error) {
+	return t.pgTx.unsafeKvLogCompact(compactMainRev, visitor)
 }
 
 // Commit commits a previous tx and begins a new writable one.
@@ -260,20 +393,27 @@ func (t *batchTx) safePending() int {
 
 func (t *batchTx) commit(stop bool) {
 	// commit the last tx
-	if t.tx != nil {
+	if t.tx != nil || (t.pgTx != nil && t.pgTx.tx != nil) {
 		if t.pending == 0 && !stop {
 			return
 		}
 
 		start := time.Now()
-
+		var err error
 		// gofail: var beforeCommit struct{}
-		err := t.tx.Commit()
+		if t.pgTx == nil {
+			err = t.tx.Commit()
+			rebalanceSec.Observe(t.tx.Stats().RebalanceTime.Seconds())
+			spillSec.Observe(t.tx.Stats().SpillTime.Seconds())
+			writeSec.Observe(t.tx.Stats().WriteTime.Seconds())
+		} else {
+			t.pgTx.updateDbTx()
+			err = t.pgTx.tx.Commit(context.Background())
+			t.pgTx.tx = nil
+			t.pgTx.txBatch = nil
+		}
 		// gofail: var afterCommit struct{}
 
-		rebalanceSec.Observe(t.tx.Stats().RebalanceTime.Seconds())
-		spillSec.Observe(t.tx.Stats().SpillTime.Seconds())
-		writeSec.Observe(t.tx.Stats().WriteTime.Seconds())
 		commitSec.Observe(time.Since(start).Seconds())
 		atomic.AddInt64(&t.backend.commits, 1)
 
@@ -283,13 +423,20 @@ func (t *batchTx) commit(stop bool) {
 		}
 	}
 	if !stop {
-		t.tx = t.backend.begin(true)
+		if t.pgTx == nil {
+			t.tx = t.backend.begin(true)
+		} else {
+			t.pgTx.tx = t.backend.pgBeginWrite()
+			t.pgTx.txBatch = &pgx.Batch{}
+		}
+
 	}
 }
 
 type batchTxBuffered struct {
 	batchTx
 	buf                     txWriteBuffer
+	kvBuf                   PgKvBuffer[*PgKvLogEntry]
 	pendingDeleteOperations int
 }
 
@@ -305,11 +452,48 @@ func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 	return tx
 }
 
+func newPgBatchTxBuffered(backend *backend) *batchTxBuffered {
+	lg := backend.lg
+	tx := &batchTxBuffered{
+		batchTx: batchTx{
+			backend: backend,
+			pgTx: &pgBatchTx{
+				pgSharedTx: pgSharedTx{
+					lg:     lg,
+					kvType: backend.pgBackend.kvType,
+				},
+				backend:    backend.pgBackend,
+				subDbBatch: newPgDbBatch(lg, backend.pgBackend.kvType),
+				subKvBatch: newPgKvBatch(lg),
+				txBatch:    &pgx.Batch{},
+			},
+		},
+		buf: txWriteBuffer{
+			txBuffer:   txBuffer{make(map[BucketID]*bucketBuffer)},
+			bucket2seq: make(map[BucketID]bool),
+		},
+	}
+	tx.Commit()
+	return tx
+}
+
 func (t *batchTxBuffered) Unlock() {
 	if t.pending != 0 {
 		t.backend.readTx.Lock() // blocks txReadBuffer for writing.
 		// gofail: var beforeWritebackBuf struct{}
 		t.buf.writeback(&t.backend.readTx.buf)
+		if t.pgTx != nil {
+			iMain := t.kvBuf.m.Iter()
+			for iMain.Next() {
+				subTree := iMain.Value()
+				iSub := subTree.Iter()
+				for iSub.Next() {
+					entry := iSub.Value()
+					t.backend.readTx.pgTx.kvBuffer.Put(entry.Key, entry.RevMain, entry)
+				}
+			}
+			t.kvBuf.Clear()
+		}
 		// gofail: var afterWritebackBuf struct{}
 		t.backend.readTx.Unlock()
 		// We commit the transaction when the number of pending operations
@@ -375,13 +559,20 @@ func (t *batchTxBuffered) unsafeCommit(stop bool) {
 			}
 		}(t.backend.readTx.tx, t.backend.readTx.txWg)
 		t.backend.readTx.reset()
+	} else if t.backend.readTx.pgTx != nil {
+		go func(wg *sync.WaitGroup) {
+			wg.Wait()
+		}(t.backend.readTx.txWg)
+		t.backend.readTx.reset()
 	}
 
 	t.batchTx.commit(stop)
 	t.pendingDeleteOperations = 0
 
 	if !stop {
-		t.backend.readTx.tx = t.backend.begin(false)
+		if t.pgTx == nil {
+			t.backend.readTx.tx = t.backend.begin(false)
+		}
 	}
 }
 
@@ -403,4 +594,29 @@ func (t *batchTxBuffered) UnsafeDelete(bucketType Bucket, key []byte) {
 func (t *batchTxBuffered) UnsafeDeleteBucket(bucket Bucket) {
 	t.batchTx.UnsafeDeleteBucket(bucket)
 	t.pendingDeleteOperations++
+}
+
+func (t *batchTxBuffered) UnsafeKvPutKey(revMain, revSub, revCreate, lease, version int64, key, value []byte) {
+	entry := &PgKvLogEntry{
+		RevMain:   revMain,
+		RevSub:    revSub,
+		RevCreate: revCreate,
+		Lease:     zeronull.Int8(lease),
+		Version:   version,
+		Key:       key,
+		Value:     value,
+	}
+	t.batchTx.unsafeKvPutKeyShared(entry)
+	t.kvBuf.Put(entry.Key, entry.RevMain, entry)
+}
+
+func (t *batchTxBuffered) UnsafeKvDeleteKey(revMain, revSub int64, key []byte) {
+	t.batchTx.UnsafeKvDeleteKey(revMain, revSub, key)
+	t.pendingDeleteOperations++
+}
+
+func (t *batchTxBuffered) UnsafeKvLogCompact(compactMainRev int64, visitor func(entry mvccpb.KeyValue) error) (int64, error) {
+	c, err := t.batchTx.UnsafeKvLogCompact(compactMainRev, visitor)
+	t.pendingDeleteOperations++
+	return c, err
 }

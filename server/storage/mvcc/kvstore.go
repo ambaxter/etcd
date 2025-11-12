@@ -58,10 +58,10 @@ type store struct {
 	// mu read locks for txns and write locks for non-txn store changes.
 	mu sync.RWMutex
 
-	b       backend.Backend
-	kvindex index
-
-	le lease.Lessor
+	b         backend.Backend
+	kvindex   index
+	pgKvIndex backend.PgKvStoreIndex
+	le        lease.Lessor
 
 	// revMuLock protects currentRev and compactMainRev.
 	// Locked at end of write txn and released after write txn unlock lock.
@@ -118,18 +118,21 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 
 	tx := s.b.BatchTx()
 	tx.LockOutsideApply()
-	tx.UnsafeCreateBucket(schema.Key)
+	if !tx.IsKvAware() {
+		tx.UnsafeCreateBucket(schema.Key)
+	}
 	schema.UnsafeCreateMetaBucket(tx)
 	tx.Unlock()
 	s.b.ForceCommit()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.restore(); err != nil {
-		// TODO: return the error instead of panic here?
-		panic("failed to recover store from backend")
+	if !tx.IsKvAware() {
+		if err := s.restore(); err != nil {
+			// TODO: return the error instead of panic here?
+			panic("failed to recover store from backend")
+		}
 	}
-
 	return s
 }
 
@@ -193,6 +196,35 @@ func (s *store) hashByRev(rev int64) (hash KeyValueHash, currentRev int64, err e
 	return hash, currentRev, err
 }
 
+func (s *store) kvHashByRev(rev int64) (hash KeyValueHash, currentRev int64, err error) {
+	var compactRev int64
+	start := time.Now()
+
+	s.mu.RLock()
+	s.revMu.RLock()
+	compactRev, currentRev = s.compactMainRev, s.currentRev
+	s.revMu.RUnlock()
+
+	if rev > 0 && rev < compactRev {
+		s.mu.RUnlock()
+		return KeyValueHash{}, 0, ErrCompacted
+	} else if rev > 0 && rev > currentRev {
+		s.mu.RUnlock()
+		return KeyValueHash{}, currentRev, ErrFutureRev
+	}
+	if rev == 0 {
+		rev = currentRev
+	}
+
+	tx := s.b.ReadTx()
+	tx.RLock()
+	defer tx.RUnlock()
+	s.mu.RUnlock()
+	hash, err = unsafePgKvHashByRev(tx, compactRev, rev)
+	hashRevSec.Observe(time.Since(start).Seconds())
+	return hash, currentRev, err
+}
+
 func (s *store) updateCompactRev(rev int64) (<-chan struct{}, int64, error) {
 	s.revMu.Lock()
 	if rev <= s.compactMainRev {
@@ -237,7 +269,13 @@ func (s *store) compact(trace *traceutil.Trace, rev, prevCompactRev int64, prevC
 			s.compactBarrier(ctx, ch)
 			return
 		}
-		hash, err := s.scheduleCompaction(rev, prevCompactRev)
+		var hash KeyValueHash
+		var err error
+		if s.b.BatchTx().IsKvAware() {
+			hash, err = s.kvScheduleCompaction(rev, prevCompactRev)
+		} else {
+			hash, err = s.scheduleCompaction(rev, prevCompactRev)
+		}
 		if err != nil {
 			s.lg.Warn("Failed compaction", zap.Error(err))
 			s.compactBarrier(context.TODO(), ch)

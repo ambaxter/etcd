@@ -168,18 +168,29 @@ func TestBatchTxCommit(t *testing.T) {
 	tx.Commit()
 
 	// check whether put happens via db view
-	backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(schema.Test.Name())
-		if bucket == nil {
-			t.Errorf("bucket test does not exit")
-			return nil
-		}
-		v := bucket.Get([]byte("foo"))
-		if v == nil {
+	if backend.TEST_POSTGRES {
+		rtx := b.ReadTx()
+		rtx.RLock()
+		defer rtx.RUnlock()
+		_, v := rtx.UnsafeRange(schema.Test, []byte("foo"), nil, 1)
+		if len(v) == 0 {
 			t.Errorf("foo key failed to written in backend")
 		}
-		return nil
-	})
+	} else {
+		backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket(schema.Test.Name())
+			if bucket == nil {
+				t.Errorf("bucket test does not exit")
+				return nil
+			}
+			v := bucket.Get([]byte("foo"))
+			if v == nil {
+				t.Errorf("foo key failed to written in backend")
+			}
+			return nil
+		})
+	}
+
 }
 
 func TestBatchTxBatchLimitCommit(t *testing.T) {
@@ -196,18 +207,28 @@ func TestBatchTxBatchLimitCommit(t *testing.T) {
 
 	// batch limit commit should have been triggered
 	// check whether put happens via db view
-	backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(schema.Test.Name())
-		if bucket == nil {
-			t.Errorf("bucket test does not exit")
-			return nil
-		}
-		v := bucket.Get([]byte("foo"))
-		if v == nil {
+	if backend.TEST_POSTGRES {
+		rtx := b.ReadTx()
+		rtx.RLock()
+		defer rtx.RUnlock()
+		_, v := rtx.UnsafeRange(schema.Test, []byte("foo"), nil, 1)
+		if len(v) == 0 {
 			t.Errorf("foo key failed to written in backend")
 		}
-		return nil
-	})
+	} else {
+		backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket(schema.Test.Name())
+			if bucket == nil {
+				t.Errorf("bucket test does not exit")
+				return nil
+			}
+			v := bucket.Get([]byte("foo"))
+			if v == nil {
+				t.Errorf("foo key failed to written in backend")
+			}
+			return nil
+		})
+	}
 }
 
 func TestRangeAfterDeleteBucketMatch(t *testing.T) {
@@ -393,8 +414,7 @@ func checkUnsafeForEach(t *testing.T, tx backend.UnsafeReader, expectedKeys, exp
 
 // runWriteback is used test the txWriteBuffer.writeback function, which is called inside tx.Unlock().
 // The parameters are chosen based on defaultBatchLimit = 10000
-func runWriteback(t testing.TB, kss, vss [][]string, isSeq bool) {
-	b, _ := betesting.NewTmpBackend(t, time.Hour, 10000)
+func runWriteback(t testing.TB, b backend.Backend, kss, vss [][]string, isSeq bool) {
 	defer betesting.Close(t, b)
 
 	tx := b.BatchTx()
@@ -463,7 +483,10 @@ func benchmarkWriteback(b *testing.B, batches, batchSize int, isSeq bool) {
 	}
 	b.ResetTimer()
 	for n := 1; n < b.N; n++ {
-		runWriteback(b, kss, vss, isSeq)
+		b.StopTimer()
+		be, _ := betesting.NewTmpBackend(b, time.Hour, 10000)
+		b.StartTimer()
+		runWriteback(b, be, kss, vss, isSeq)
 	}
 }
 

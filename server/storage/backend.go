@@ -28,7 +28,7 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func newBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
+func newBoltBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 	bcfg := backend.DefaultBackendConfig(cfg.Logger)
 	bcfg.Path = cfg.BackendPath()
 	bcfg.UnsafeNoFsync = cfg.UnsafeNoFsync
@@ -55,16 +55,51 @@ func newBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 	return backend.New(bcfg)
 }
 
+func newPgConfig(cfg config.ServerConfig, hooks backend.Hooks) backend.PgBackendConfig {
+	bcfg := backend.DefaultPgBackendConfig(cfg.Logger)
+	if cfg.BackendBatchLimit != 0 {
+		bcfg.BatchLimit = cfg.BackendBatchLimit
+		if cfg.Logger != nil {
+			cfg.Logger.Info("setting backend batch limit", zap.Int("batch limit", cfg.BackendBatchLimit))
+		}
+	}
+	if cfg.BackendBatchInterval != 0 {
+		bcfg.BatchInterval = cfg.BackendBatchInterval
+		if cfg.Logger != nil {
+			cfg.Logger.Info("setting backend batch interval", zap.Duration("batch interval", cfg.BackendBatchInterval))
+		}
+	}
+	bcfg.Logger = cfg.Logger
+	bcfg.PostgresKvType = cfg.BackendUsePostgresKvType
+	bcfg.Hooks = hooks
+	return bcfg
+}
+
+func newPgBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
+	bcfg := newPgConfig(cfg, hooks)
+	return backend.NewPg(bcfg)
+}
+
+func recoverPgBackend(cfg config.ServerConfig, hooks backend.Hooks, path string) backend.Backend {
+	bcfg := newPgConfig(cfg, hooks)
+	return backend.RecoverPg(bcfg, path)
+}
+
 // OpenSnapshotBackend renames a snapshot db to the current etcd db and opens it.
 func OpenSnapshotBackend(cfg config.ServerConfig, ss *snap.Snapshotter, snapshot raftpb.Snapshot, hooks *BackendHooks) (backend.Backend, error) {
 	snapPath, err := ss.DBFilePath(snapshot.Metadata.Index)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find database snapshot file (%w)", err)
 	}
-	if err := os.Rename(snapPath, cfg.BackendPath()); err != nil {
-		return nil, fmt.Errorf("failed to rename database snapshot file (%w)", err)
+	if cfg.BackendUsePostgres {
+		return recoverPgBackend(cfg, hooks, snapPath), nil
+	} else {
+		if err := os.Rename(snapPath, cfg.BackendPath()); err != nil {
+			return nil, fmt.Errorf("failed to rename database snapshot file (%w)", err)
+		}
+		return OpenBackend(cfg, hooks), nil
 	}
-	return OpenBackend(cfg, hooks), nil
+
 }
 
 // OpenBackend returns a backend using the current etcd db.
@@ -73,7 +108,11 @@ func OpenBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 
 	now, beOpened := time.Now(), make(chan backend.Backend)
 	go func() {
-		beOpened <- newBackend(cfg, hooks)
+		if cfg.BackendUsePostgres {
+			beOpened <- newPgBackend(cfg, hooks)
+		} else {
+			beOpened <- newBoltBackend(cfg, hooks)
+		}
 	}()
 
 	defer func() {

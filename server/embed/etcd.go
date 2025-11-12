@@ -203,6 +203,8 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		AutoCompactionMode:                cfg.AutoCompactionMode,
 		QuotaBackendBytes:                 cfg.QuotaBackendBytes,
 		BackendBatchLimit:                 cfg.BackendBatchLimit,
+		BackendUsePostgres:                cfg.BackendUsePostgres,
+		BackendUsePostgresKvType:          cfg.BackendUsePostgresKvType,
 		BackendFreelistType:               backendFreelistType,
 		BackendBatchInterval:              cfg.BackendBatchInterval,
 		MaxTxnOps:                         cfg.MaxTxnOps,

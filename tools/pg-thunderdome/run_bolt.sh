@@ -1,0 +1,4 @@
+#!/bin/bash
+
+VALUE_SIZE_POWER_RANGE="8 11" CONN_CLI_COUNT_POWER_RANGE="5 10" RATIO_LIST="128/1" ./pg-thunderdome.sh
+

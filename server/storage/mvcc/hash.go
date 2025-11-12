@@ -15,6 +15,7 @@
 package mvcc
 
 import (
+	"encoding/binary"
 	"hash"
 	"hash/crc32"
 	"sort"
@@ -22,6 +23,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 )
@@ -150,7 +152,11 @@ func (s *hashStorage) HashByRev(rev int64) (KeyValueHash, int64, error) {
 	}
 	s.hashMu.RUnlock()
 
-	return s.store.hashByRev(rev)
+	if s.store.b.BatchTx().IsKvAware() {
+		return s.store.kvHashByRev(rev)
+	} else {
+		return s.store.hashByRev(rev)
+	}
 }
 
 func (s *hashStorage) Store(hash KeyValueHash) {
@@ -177,4 +183,47 @@ func (s *hashStorage) Hashes() []KeyValueHash {
 	hashes = append(hashes, s.hashes...)
 	s.hashMu.RUnlock()
 	return hashes
+}
+
+func unsafePgKvHashByRev(tx backend.UnsafeKvReader, prevCompactRev, compactMainRev int64) (KeyValueHash, error) {
+	h := newPGKVHasher(prevCompactRev, compactMainRev)
+	tx.UnsafeKvLogForEachByRev(compactMainRev, func(entry mvccpb.KeyValue) error {
+		h.WriteEntry(entry)
+		return nil
+	})
+	return h.Hash(), nil
+}
+
+type pgKvHasher struct {
+	hash           hash.Hash32
+	prevCompactRev int64
+	compactMainRev int64
+}
+
+func newPGKVHasher(prevCompactRev, compactMainRev int64) *pgKvHasher {
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	h.Write(schema.Key.Name())
+	return &pgKvHasher{
+		hash:           h,
+		prevCompactRev: prevCompactRev,
+		compactMainRev: compactMainRev,
+	}
+}
+
+func (h *pgKvHasher) WriteEntry(entry mvccpb.KeyValue) {
+	h.hash.Write(entry.Key)
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(entry.CreateRevision))
+	h.hash.Write(b)
+	binary.BigEndian.PutUint64(b, uint64(entry.ModRevision))
+	h.hash.Write(b)
+	binary.BigEndian.PutUint64(b, uint64(entry.Lease))
+	h.hash.Write(b)
+	binary.BigEndian.PutUint64(b, uint64(entry.Version))
+	h.hash.Write(b)
+	h.hash.Write(entry.Value)
+}
+
+func (h *pgKvHasher) Hash() KeyValueHash {
+	return KeyValueHash{Hash: h.hash.Sum32(), CompactRevision: h.prevCompactRev, Revision: h.compactMainRev}
 }
