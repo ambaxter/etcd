@@ -137,7 +137,7 @@ type generation struct {
 }
 ```
 
-Definitions:
+Struct Definition Links:
 * [Revision](https://github.com/etcd-io/etcd/blob/v3.6.7/server/storage/mvcc/revision.go#L35)
 * [BucketKey](https://github.com/etcd-io/etcd/blob/v3.6.7/server/storage/mvcc/revision.go#L64)
 * [KeyValue](https://github.com/etcd-io/etcd/blob/v3.6.7/api/mvccpb/kv.proto#L14)
@@ -248,7 +248,7 @@ You can tell at what value size PostgreSQL's TOAST compression gets enabled.
 After the compaction command completes, the defrag command is sent.
 In BoltDB, this locks and rebuilds the the database by inserting every key into the new file.
 This improves performance and reclaims space.
-To compare the databases performance as closely as possible, PostgreSQL executes `VACUUM (FULL, ANALYZE)`.
+To compare the databases performance as closely as possible, PostgreSQL executes [`VACUUM (FULL, ANALYZE)`](https://www.postgresql.org/docs/18/sql-vacuum.html).
 This runs PostgreSQL's maintenance processes, which locks the database tables and reclaims disk space if possible.
 
 BoltDB regularly outperforms the naive PostgreSQL tables during defrag.
@@ -270,17 +270,17 @@ The harness is pretty minimal and focuses on wrapping different table configurat
 If at all possible, I would prefer not spending time  tracking down errors due to malformed queries. 
 During startup, every PostgreSQL query is turned into a PostgreSQL function.
 This improves certain performance aspects and, much more importantly, adds an additional layer of up-front query correctness checking.
-Frustratingly, `ON CONFLICT` clauses are only checked during query runtime. 
+Frustratingly, [`ON CONFLICT`](https://www.postgresql.org/docs/18/sql-insert.html) clauses are only checked during query runtime. 
 
 ## ETCD Performance
 
 ### AOS vs. SOA
 
-Early in this effort, Gemini suggested I should send transactions as an Array of Structs (AOS) using PostgreSQL's `COPY` protocol to improve performance.
+Early in this effort, Gemini suggested I should send transactions as an Array of Structs (AOS) using PostgreSQL's [`COPY`](https://www.postgresql.org/docs/18/sql-copy.html) protocol to improve performance.
 Since my querries needed `ON CONFLICT` clauses, that would not work. 
 Gemini recommended `COPY`ing the transactions to a temporary table first, then upserting everything at once.
 
-I found that sending the data as a Struct of Arrays (SOA) and upserting the data with the `unnest` clause is substantially faster.
+I found that sending the data as a Struct of Arrays (SOA) and upserting the data with the [`unnest`](https://www.postgresql.org/docs/current/functions-array.html) function is substantially faster.
 
 ### Unsafe []byte to string conversion
 
@@ -298,6 +298,12 @@ Translating this directly into PostgreSQL's qeuries meant that each and every ke
 This causes major performance problems.
 To improve performance, these queries and the surrounding application code were rewritten to collect all the keys in an array first and send them as a batch.
 Despite using batches performance is still lacking.
+
+### Wal Compression
+
+Several tests focused on determing if PostgreSQL's Write Ahead Log (WAL) Compression.
+They compared no, pglz, and lz4 compression.
+While I found a a drammatic decrease in block IO using compression, there was no corresponding performance difference using SSD drives.
 
 ## Next Steps
 
