@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.2"
+__generated_with = "0.23.4"
 app = marimo.App(width="medium")
 
 
@@ -13,6 +13,7 @@ def _():
     import io
     import re
     import altair as alt
+    import IPython
 
     return Iterator, alt, pl, re, register_io_source
 
@@ -289,7 +290,7 @@ def _(alt, pl, run1_read_ops):
 
 @app.cell
 def _(alt, pl, run1_read_ops):
-    run1_read_response_times = run1_read_ops.filter((pl.col("database") == "bolt") | ((pl.col("database") == "pg") & (pl.col("kv_type").str.contains("bucket")))).select(
+    run1_read_response_times = run1_read_ops.filter((pl.col("database") == "bolt") | ((pl.col("database") == "pg") & (pl.col("kv_type").str.ends_with("bucket")))).select(
         pl.col("config"),
         pl.col("value_size"),
         pl.col("read_slowest_response_s_avg"),
@@ -302,7 +303,7 @@ def _(alt, pl, run1_read_ops):
     # TODO: Bar - average latency + ErrorBar - stddev + Points min, max
     _chart = (
         alt.Chart(run1_read_response_times)
-        .mark_bar(size=18)
+        .mark_bar()
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='read_average_response_s_avg', type='quantitative', title='Read Latency (S) (Lower Is Better)'),
@@ -315,7 +316,7 @@ def _(alt, pl, run1_read_ops):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_read_response_times)
@@ -399,7 +400,7 @@ def _(pl, run_1_write_ops_no_wal):
         pl.col("read_slowest_response_s_avg").alias("bolt_slowest_respone_s"),
         pl.col("read_slowest_response_s_avg_right").alias("pg_slowest_respone_s"),
         ((pl.col("read_slowest_response_s_avg") - pl.col("read_slowest_response_s_avg_right")) / pl.col("read_slowest_response_s_avg")).alias("pg_read_percent_slowest_difference"),
-    
+
         pl.col("write_ops_per_s_avg").alias("bolt_write_ops_per_s_avg"),
         pl.col("write_ops_per_s_avg_right").alias("pg_write_ops_per_s_avg"),
         (pl.col("write_ops_per_s_avg") - pl.col("write_ops_per_s_avg_right")) / pl.col("write_ops_per_s_avg"),
@@ -421,7 +422,7 @@ def _(pl, run_1_write_ops_no_wal):
 
 @app.cell
 def _(pl, run_1_write_ops_no_wal):
-    run1_write_ops_cmp_off = run_1_write_ops_no_wal.filter([(pl.col("database") == "bolt") | ((pl.col("database") == "pg") & (pl.col("kv_type").str.contains("bucket"))), pl.col("conn_size") == 512]).collect()
+    run1_write_ops_cmp_off = run_1_write_ops_no_wal.filter([(pl.col("database") == "bolt") | ((pl.col("database") == "pg") & (pl.col("kv_type").str.ends_with("bucket"))), pl.col("conn_size") == 512]).collect()
     return (run1_write_ops_cmp_off,)
 
 
@@ -471,7 +472,7 @@ def _(alt, run1_write_ops_cmp_off):
         .mark_bar()
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
-            y=alt.Y(field='write_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
+            y=alt.Y(field='read_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
             color=alt.Color(field='config', type='nominal', title="Database Configuration", scale={
                 'scheme': 'category10'
             }),
@@ -530,7 +531,7 @@ def _(alt, pl, run1_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_write_read_response_times)
@@ -598,7 +599,7 @@ def _(alt, pl, run1_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_write_write_response_times)
@@ -785,7 +786,7 @@ def _(alt, pl, run1_read_ops):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_lbr_read_response_times)
@@ -878,7 +879,7 @@ def _(alt, run1_lbr_write_ops_cmp_off):
         .mark_bar()
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
-            y=alt.Y(field='write_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
+            y=alt.Y(field='read_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
             color=alt.Color(field='config', type='nominal', title="Database Configuration", scale={
                 'scheme': 'category10'
             }),
@@ -937,7 +938,7 @@ def _(alt, pl, run1_lbr_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_lbr_write_read_response_times)
@@ -1005,7 +1006,7 @@ def _(alt, pl, run1_lbr_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run1_lbr_write_write_response_times)
@@ -1184,7 +1185,6 @@ def _(my_scan_csv, pl):
     # Which database configuration has the best write response stddev?
     # Which database configuration has the best compaction time?
     # Which database configuration has the best defrag time?
-
     return run2_read_ops, run2_write_df, run_2_write_ops_no_wal
 
 
@@ -1262,7 +1262,7 @@ def _(alt, run2_read_response_times):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run2_read_response_times)
@@ -1356,7 +1356,7 @@ def _(alt, run2_lbr_write_ops_cmp_off):
         .mark_bar()
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
-            y=alt.Y(field='write_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
+            y=alt.Y(field='read_ops_per_s_avg', type='quantitative', title='Read Ops/S (Higher Is Better)', stack=False),
             color=alt.Color(field='config', type='nominal', title="Database Configuration", scale={
                 'scheme': 'category10'
             }),
@@ -1415,7 +1415,7 @@ def _(alt, pl, run2_lbr_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run2_lbr_write_read_response_times)
@@ -1483,7 +1483,7 @@ def _(alt, pl, run2_lbr_write_ops_cmp_off):
         .encode(
             x=alt.X(field='value_size', type='nominal', title='Value Size (bytes)'),
             y=alt.Y(field='stddev_lower', type='quantitative'),
-            y2=alt.Y(field='stddev_upper', type='quantitative'),
+            y2=alt.Y(field='stddev_upper'),
             xOffset=alt.XOffset(field="config"),
         ) +
         alt.Chart(run2_lbr_write_write_response_times)

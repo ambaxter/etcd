@@ -110,14 +110,9 @@ function kill_etcd_server() {
 }
 
 function collect_db_size() {
-  if [ "$CMP_ORIOLE_STR" == "-1" ]; then
     COLLECTED_DB_SIZE=$(podman run --replace --name db_size --rm --network etcd_bridge pgetcd:latest etcdctl endpoint status \
       --endpoints "http://etcd:23790" --write-out="json" \
       2>/dev/null | egrep -o '"dbSize":[0-9]*' | egrep -o '[0-9].*')
-  else
-    echo "In Branch"
-    COLLECTED_DB_SIZE=$(podman exec oriole17 du -bs /var/lib/postgresql/data/orioledb_data | egrep -o '[0-9]*')
-  fi
 }
 
 while getopts ":w:c:p:l:vhod" OPTION; do
