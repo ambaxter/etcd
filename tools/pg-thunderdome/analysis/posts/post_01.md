@@ -263,7 +263,7 @@ The harness is pretty minimal and focuses on wrapping different table configurat
 
 ### Dependencies
 * [jackc/pgx/v5](github.com/jackc/pgx/v5) for PostgreSQL connectivity
-* [bstephenafamo/bob)b](github.com/stephenafamo/bob) to add some compile-time query correctness guarantees
+* [bstephenafamo/bob](github.com/stephenafamo/bob) to add some compile-time query correctness guarantees
 
 ### PostgreSQL Functions
 

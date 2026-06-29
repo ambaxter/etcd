@@ -1676,5 +1676,71 @@ def _(alt, run2_lbr_write_ops_cmp_off):
     return
 
 
+@app.cell
+def _(my_scan_csv, pl):
+    run3 = pl.concat([
+        my_scan_csv("results/20260430/bolt-result-202604301752.csv", "bolt"),
+        my_scan_csv("results/20260430/bolt-result-202604301826.csv", "bolt"),
+        my_scan_csv("results/20260430/postgres17_result-202605041030.csv", "pg17"),
+        my_scan_csv("results/20260430/postgres17_result-202605041037.csv", "pg17"),
+        my_scan_csv("results/20260430/postgres18_result-202605041050.csv", "pg18"),
+        my_scan_csv("results/20260430/postgres18_result-202605041057.csv", "pg18"),
+        my_scan_csv("results/20260430/oriole17_result-202605040943.csv", "or17"),
+        my_scan_csv("results/20260430/oriole17_result-202605040957.csv", "or17")
+    ])
+    run3_write_df = run3.filter([pl.col("ratio") == ".0078", pl.col("conn_size") == 256, pl.col("write_ops_per_s_avg") > 0])
+    run3_read_df = run3.filter([pl.col("ratio") == "128.0000", pl.col("conn_size") == 2048])
+
+    run3_read_ops = run3_read_df.select(
+        pl.col("value_size"),
+        pl.col("database"),
+        pl.col("kv_type"),
+        pl.col("cmp_oriole"),
+        (pl.concat_str([pl.col("database"),pl.col("kv_type")], separator=": ") + pl.when(pl.col("cmp_oriole") > 0).then(pl.lit(", compressed")).otherwise(pl.lit(""))).alias("config"),
+        pl.col("init_db_size_mb"),
+        pl.col("read_ops_per_s_avg"),
+        pl.col("read_average_response_s_avg"),
+        pl.col("read_fastest_response_s_avg"),
+        pl.col("read_slowest_response_s_avg"),
+        pl.col("read_stddev_response_s_avg"),
+    ).sort(["value_size","config"])
+
+    run3_write_ops = run3_write_df.select(
+        pl.col("value_size"),
+        pl.col("database"),
+        pl.col("kv_type"),
+        pl.col("cmp_wal"),
+        (pl.concat_str([pl.col("database"),pl.col("kv_type")], separator=": ") + pl.when(pl.col("cmp_oriole") > 0).then(pl.lit(", compressed")).otherwise(pl.lit(""))).alias("config"),
+        pl.col("init_db_size_mb"),
+        pl.col("completed_db_size_mb"),
+        pl.col("final_db_size_mb"),
+        pl.col("read_ops_per_s_avg"),
+        pl.col("read_average_response_s_avg"),
+        pl.col("read_fastest_response_s_avg"),
+        pl.col("read_slowest_response_s_avg"),
+        pl.col("read_stddev_response_s_avg"),
+        pl.col("write_ops_per_s_avg"),
+        pl.col("write_average_response_s_avg"),
+        pl.col("write_fastest_response_s_avg"),
+        pl.col("write_slowest_response_s_avg"),
+        pl.col("write_stddev_response_s_avg"),
+        (pl.col("final_compact_ms") / 1000).alias("final_compact_s"),
+        (pl.col("final_defrag_ms") / 1000).alias("final_defrag_s"),
+    ).sort(["value_size","config"])
+    return run3_read_ops, run3_write_ops
+
+
+@app.cell
+def _(run3_read_ops):
+    run3_read_ops.collect()
+    return
+
+
+@app.cell
+def _(run3_write_ops):
+    run3_write_ops.collect()
+    return
+
+
 if __name__ == "__main__":
     app.run()

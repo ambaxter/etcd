@@ -130,14 +130,27 @@ while getopts ":w:c:p:l:vhod" OPTION; do
   p)
     CLIENT_PORT="${OPTARG}"
     ;;
-  o)
+  n)
     POD_YAML_FILE="${ETCD_COMPOSE_DIR}/db/oriole17_compose.yaml"
     OUTPUT_FILE="${CURRENT_DIR}/oriole17_result-$(date '+%Y%m%d%H%M').csv"
     CMP_WAL_LIST="${PG_CMP_WAL_LIST}"
     CMP_ORIOLE_LIST="${PG_CMP_ORIOLE_LIST}"
     KV_TYPE_LIST="${PG_KV_TYPE_LIST}"
     ;;
+  o)
+    POD_YAML_FILE="${ETCD_COMPOSE_DIR}/db/oriole18_compose.yaml"
+    OUTPUT_FILE="${CURRENT_DIR}/oriole18_result-$(date '+%Y%m%d%H%M').csv"
+    CMP_WAL_LIST="${PG_CMP_WAL_LIST}"
+    CMP_ORIOLE_LIST="${PG_CMP_ORIOLE_LIST}"
+    KV_TYPE_LIST="${PG_KV_TYPE_LIST}"
+    ;;
   d)
+    POD_YAML_FILE="${ETCD_COMPOSE_DIR}/db/postgres17_compose.yaml"
+    OUTPUT_FILE="${CURRENT_DIR}/postgres17_result-$(date '+%Y%m%d%H%M').csv"
+    CMP_WAL_LIST="${PG_CMP_WAL_LIST}"
+    KV_TYPE_LIST="${PG_KV_TYPE_LIST}"
+    ;;
+  e)
     POD_YAML_FILE="${ETCD_COMPOSE_DIR}/db/postgres18_compose.yaml"
     OUTPUT_FILE="${CURRENT_DIR}/postgres18_result-$(date '+%Y%m%d%H%M').csv"
     CMP_WAL_LIST="${PG_CMP_WAL_LIST}"

@@ -4,8 +4,8 @@ include:
 services:
   # --- The Database ---
   pgdb:
-    shm_size: 1gb
-    image: orioledb/orioledb:beta15-pg17
+    shm_size: 4gb
+    image: orioledb/orioledb:beta16-pg17
     container_name: ${DB_NAME:-oriole17}
     configs:
       - source: pg_config

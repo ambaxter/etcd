@@ -5,8 +5,8 @@ services:
   # --- The Database ---
   pgdb:
     shm_size: 4gb
-    image: postgres:18.4
-    container_name: ${DB_NAME:-postgres18}
+    image: postgres:17.9
+    container_name: ${DB_NAME:-postgres17}
     command: -c config_file=/etc/postgresql/postgresql.conf
     configs:
       - source: pg_config
@@ -30,8 +30,8 @@ services:
 configs:
   pg_config:
     content: |+
-      data_directory = '/var/lib/postgresql/18/docker'
-      hba_file = '/var/lib/postgresql/18/docker/pg_hba.conf'
+      data_directory = '/var/lib/postgresql/data'
+      hba_file = '/var/lib/postgresql/data/pg_hba.conf'
       listen_addresses = '*'
       max_wal_size = 8GB
       min_wal_size = 1GB
