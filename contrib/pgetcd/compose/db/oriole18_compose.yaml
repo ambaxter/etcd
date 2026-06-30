@@ -28,8 +28,8 @@ services:
 configs:
   pg_config:
     content: |+
-      data_directory = '/var/lib/postgresql/18/docker'
-      hba_file = '/var/lib/postgresql/18/docker/pg_hba.conf'
+      data_directory = '/var/lib/postgresql/data'
+      hba_file = '/var/lib/postgresql/data/pg_hba.conf'
       listen_addresses = '*'
       shared_preload_libraries = 'orioledb'
       default_table_access_method = 'orioledb'

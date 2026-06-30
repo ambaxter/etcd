@@ -115,7 +115,7 @@ function collect_db_size() {
       2>/dev/null | egrep -o '"dbSize":[0-9]*' | egrep -o '[0-9].*')
 }
 
-while getopts ":w:c:p:l:vhod" OPTION; do
+while getopts ":w:c:p:l:vhnode" OPTION; do
   case $OPTION in
   h)
     echo "usage: $(basename $0) [-h] [-w WORKING_DIR] [-c RUN_COUNT] [-p PORT] [-l RANGE_QUERY_LIMIT] [-d] [-v]" >&2

@@ -29,7 +29,7 @@ services:
     profiles:
       - etcd
     healthcheck:
-      test: ["CMD", "etcdctl endpoint status  --endpoints http://localhost:23790"]
+      test: ["CMD", "/usr/local/bin/etcdctl", "endpoint", "health", "--endpoints", "http://localhost:23790"]
       interval: 5s
       timeout: 5s
       retries: 5
