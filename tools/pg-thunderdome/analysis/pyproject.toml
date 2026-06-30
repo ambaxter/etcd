@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastexcel>=0.18.0",
-    "ipython>=9.13.0",
-    "marimo[recommended]>=0.23.5",
+    "fastexcel>=0.20.2",
+    "ipython>=9.15.0",
+    "marimo[recommended]>=0.23.11",
 ]
