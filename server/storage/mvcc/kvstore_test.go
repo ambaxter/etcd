@@ -984,6 +984,37 @@ func (b *fakeBatchTx) UnsafeDelete(bucket backend.Bucket, key []byte) {
 func (b *fakeBatchTx) UnsafeForEach(bucket backend.Bucket, visitor func(k, v []byte) error) error {
 	return nil
 }
+
+func (b *fakeBatchTx) IsPgAware() bool { return false }
+func (b *fakeBatchTx) UnsafeExactKeys(bucket backend.Bucket, keys [][]byte) (vals map[string][]byte) {
+	return nil
+}
+func (b *fakeBatchTx) IsKvAware() bool  { return false }
+func (b *fakeBatchTx) LockKvCompact()   {}
+func (b *fakeBatchTx) UnlockKvCompact() {}
+func (b *fakeBatchTx) UnsafeKvRangeEntries(key, endKey []byte, limit int64, ro backend.KvRangeOptions) []mvccpb.KeyValue {
+	return nil
+}
+func (b *fakeBatchTx) UnsafeKvLogRangeEntries(key, endKey []byte, latestRev int64, limit int64, ro backend.KvRangeOptions) []mvccpb.KeyValue {
+	return nil
+}
+func (b *fakeBatchTx) UnsafeKvRangeKeys(key, endKey []byte, limit int64, ro backend.KvRangeOptions) [][]byte {
+	return nil
+}
+func (b *fakeBatchTx) UnsafeKvLogRangeKeys(key, endKey []byte, latestRev int64, limit int64, ro backend.KvRangeOptions) [][]byte {
+	return nil
+}
+func (b *fakeBatchTx) UnsafeKvLogForEachByRev(latestRev int64, visitor func(entry mvccpb.KeyValue) error) error {
+	return nil
+}
+
+func (b *fakeBatchTx) UnsafeKvPutKey(revMain, revSub, revCreate, lease, version int64, key, value []byte) {
+}
+func (b *fakeBatchTx) UnsafeKvDeleteKey(revMain, revSub int64, key []byte) {}
+func (b *fakeBatchTx) UnsafeKvLogCompact(compactMainRev int64, visitor func(entry mvccpb.KeyValue) error) (int64, error) {
+	return 0, nil
+}
+
 func (b *fakeBatchTx) Commit()        {}
 func (b *fakeBatchTx) CommitAndStop() {}
 

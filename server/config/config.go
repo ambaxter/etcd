@@ -70,6 +70,11 @@ type ServerConfig struct {
 	// BackendBatchLimit is the maximum operations before commit the backend transaction.
 	BackendBatchLimit int
 
+	// BackendUsePostgres is which backend is to be used
+	BackendUsePostgres bool
+	// BackendUsePostgresKv is which backend the KV system use
+	BackendUsePostgresKvType string
+
 	// BackendFreelistType is the type of the backend boltdb freelist.
 	BackendFreelistType bolt.FreelistType
 

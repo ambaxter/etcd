@@ -1,0 +1,38 @@
+networks:
+  etcd_bridge:
+    driver: bridge
+    name: etcd_bridge
+volumes:
+  socket-dir:
+services:
+  etcd:
+    image: localhost/pgetcd:latest
+    container_name: etcd
+    environment:
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:23790"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://0.0.0.0:23790"
+      ETCD_BACKEND_USE_POSTGRES: true
+      ETCD_BACKEND_USE_POSTGRES_KV_TYPE: ${KV_TYPE:-bucket}
+      ETCD_QUOTA_BACKEND_BYTES: 32212254720
+      #ETCD_AUTO_COMPACTION_MODE: 'periodic'
+      #ETCD_AUTO_COMPACTION_RETENTION: '5m'
+      #ETCD_ENABLE_PPROF: true
+    volumes:
+      - socket-dir:/var/run/postgresql
+    ports:
+      - "23790:23790"
+      - "2380:2380"
+      - "6060:6060"
+    depends_on:
+      pgdb:
+        condition: service_healthy
+    profiles:
+      - etcd
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/etcdctl", "endpoint", "health", "--endpoints", "http://localhost:23790"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - etcd_bridge

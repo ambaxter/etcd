@@ -22,6 +22,10 @@ build-%:
 tools:
 	GO_BUILD_FLAGS="${GO_BUILD_FLAGS} -v -mod=readonly" ./scripts/build_tools.sh
 
+.PHONY: tools-%
+tools-%:
+	GOOS=$$(echo $* | cut -d- -f 1) GOARCH=$$(echo $* | cut -d- -f 2) GO_BUILD_FLAGS="${GO_BUILD_FLAGS} -v -mod=readonly" ./scripts/build_tools.sh
+
 # Tests
 
 GO_TEST_FLAGS?=

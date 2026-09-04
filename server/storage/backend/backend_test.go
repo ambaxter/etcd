@@ -72,7 +72,6 @@ func TestBackendSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	require.NoError(t, f.Close())
-
 	// bootstrap new backend from the snapshot
 	bcfg := backend.DefaultBackendConfig(zaptest.NewLogger(t))
 	bcfg.Path, bcfg.BatchInterval, bcfg.BatchLimit = f.Name(), time.Hour, 10000
@@ -109,19 +108,21 @@ func TestBackendBatchIntervalCommit(t *testing.T) {
 		time.Sleep(time.Duration(i*100) * time.Millisecond)
 	}
 
-	// check whether put happens via db view
-	assert.NoError(t, backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("test"))
-		if bucket == nil {
-			t.Errorf("bucket test does not exit")
+	if !backend.TEST_POSTGRES {
+		// check whether put happens via db view
+		assert.NoError(t, backend.DbFromBackendForTest(b).View(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket([]byte("test"))
+			if bucket == nil {
+				t.Errorf("bucket test does not exit")
+				return nil
+			}
+			v := bucket.Get([]byte("foo"))
+			if v == nil {
+				t.Errorf("foo key failed to written in backend")
+			}
 			return nil
-		}
-		v := bucket.Get([]byte("foo"))
-		if v == nil {
-			t.Errorf("foo key failed to written in backend")
-		}
-		return nil
-	}))
+		}))
+	}
 }
 
 func TestBackendDefrag(t *testing.T) {
@@ -177,13 +178,17 @@ func TestBackendDefrag(t *testing.T) {
 		t.Errorf("hash = %v, want %v", nh, oh)
 	}
 
-	nsize := b.Size()
-	if nsize >= size {
-		t.Errorf("new size = %v, want < %d", nsize, size)
-	}
-	db := backend.DbFromBackendForTest(b)
-	if db.FreelistType != bcfg.BackendFreelistType {
-		t.Errorf("db FreelistType = [%v], want [%v]", db.FreelistType, bcfg.BackendFreelistType)
+	if !backend.TEST_POSTGRES {
+
+		nsize := b.Size()
+		if nsize >= size {
+			t.Errorf("new size = %v, want < %d", nsize, size)
+		}
+
+		db := backend.DbFromBackendForTest(b)
+		if db.FreelistType != bcfg.BackendFreelistType {
+			t.Errorf("db FreelistType = [%v], want [%v]", db.FreelistType, bcfg.BackendFreelistType)
+		}
 	}
 
 	// try put more keys after shrink.

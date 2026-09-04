@@ -25,5 +25,10 @@ func DefragLimitForTest() int {
 }
 
 func CommitsForTest(b Backend) int64 {
-	return b.(*backend).Commits()
+	switch typed := b.(type) {
+	case *backend:
+		return typed.Commits()
+	default:
+		panic("unknown backend")
+	}
 }

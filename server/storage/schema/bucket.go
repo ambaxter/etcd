@@ -69,6 +69,8 @@ func (b bucket) Name() []byte            { return b.name }
 func (b bucket) String() string          { return string(b.Name()) }
 func (b bucket) IsSafeRangeBucket() bool { return b.safeRangeBucket }
 
+func (b bucket) IsKeys() bool { return b.id == 1 }
+
 var (
 	// Pre v3.5
 	ScheduledCompactKeyName    = []byte("scheduledCompactRev")

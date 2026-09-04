@@ -1,0 +1,42 @@
+include:
+  - ../pgetcd_compose.yaml
+
+services:
+  # --- The Database ---
+  pgdb:
+    shm_size: 4gb
+    image: postgres:17.9
+    container_name: ${DB_NAME:-postgres17}
+    command: -c config_file=/etc/postgresql/postgresql.conf
+    configs:
+      - source: pg_config
+        target: /etc/postgresql/postgresql.conf
+    environment:
+      POSTGRES_PASSWORD: mysecretpassword
+    volumes:
+      # Maps the named volume to the container path
+      - socket-dir:/var/run/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - etcd_bridge
+
+configs:
+  pg_config:
+    content: |+
+      data_directory = '/var/lib/postgresql/data'
+      hba_file = '/var/lib/postgresql/data/pg_hba.conf'
+      listen_addresses = '*'
+      max_wal_size = 8GB
+      min_wal_size = 1GB
+      shared_buffers = 4GB
+      work_mem = 512MB
+      checkpoint_timeout = 30s
+      max_connections = 128
+      wal_compression = ${CMP_WAL:-off}

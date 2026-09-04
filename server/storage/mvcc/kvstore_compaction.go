@@ -22,6 +22,7 @@ import (
 	humanize "github.com/dustin/go-humanize"
 	"go.uber.org/zap"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 )
 
@@ -95,4 +96,54 @@ func (s *store) scheduleCompaction(compactMainRev, prevCompactRev int64) (KeyVal
 			return KeyValueHash{}, fmt.Errorf("interrupted due to stop signal")
 		}
 	}
+}
+
+func (s *store) kvScheduleCompaction(compactMainRev, prevCompactRev int64) (KeyValueHash, error) {
+	totalStart := time.Now()
+	s.pgKvIndex.Compact(compactMainRev)
+	indexCompactionPauseMs.Observe(float64(time.Since(totalStart) / time.Millisecond))
+
+	totalStart = time.Now()
+	defer func() { dbCompactionTotalMs.Observe(float64(time.Since(totalStart) / time.Millisecond)) }()
+	var keyCompactions int64
+	defer func() { dbCompactionKeysCounter.Add(float64(keyCompactions)) }()
+	defer func() { dbCompactionLast.Set(float64(time.Now().Unix())) }()
+
+	end := make([]byte, 8)
+	binary.BigEndian.PutUint64(end, uint64(compactMainRev+1))
+
+	h := newPGKVHasher(prevCompactRev, compactMainRev)
+	start := time.Now()
+
+	tx := s.b.BatchTx()
+	tx.LockKvCompact()
+	count, err := tx.UnsafeKvLogCompact(compactMainRev, func(entry mvccpb.KeyValue) error {
+		h.WriteEntry(entry)
+		return nil
+	})
+	if err != nil {
+		s.lg.Panic("Error during compaction", zap.Error(err))
+	}
+	keyCompactions = count
+	tx.LockOutsideApply()
+	// gofail: var compactBeforeSetFinishedCompact struct{}
+	UnsafeSetFinishedCompact(tx, compactMainRev)
+	tx.Unlock()
+	tx.UnlockKvCompact()
+	dbCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
+	// gofail: var compactAfterSetFinishedCompact struct{}
+	hash := h.Hash()
+	size, sizeInUse := s.b.Size(), s.b.SizeInUse()
+	s.lg.Info(
+		"finished scheduled compaction",
+		zap.Int64("compact-revision", compactMainRev),
+		zap.Int64("compact-entries", keyCompactions),
+		zap.Duration("took", time.Since(totalStart)),
+		zap.Uint32("hash", hash.Hash),
+		zap.Int64("current-db-size-bytes", size),
+		zap.String("current-db-size", humanize.Bytes(uint64(size))),
+		zap.Int64("current-db-size-in-use-bytes", sizeInUse),
+		zap.String("current-db-size-in-use", humanize.Bytes(uint64(sizeInUse))),
+	)
+	return hash, nil
 }
